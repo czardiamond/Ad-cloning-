@@ -1,0 +1,10 @@
+{
+  "name": "AdClone AI",
+  "description": "Hollywood-grade video studio editor with 3D LUT color grading, Dolby Atmos 3D audio, AI chroma keying, multi-camera director cuts, optical motion tracking, and automated ad publishing.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

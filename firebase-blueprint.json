@@ -1,0 +1,40 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profiles",
+      "description": "User account profiles and session data",
+      "properties": {
+        "userId": { "type": "string", "description": "Unique user identifier" },
+        "email": { "type": "string", "description": "User email address" },
+        "name": { "type": "string", "description": "User display name" },
+        "tier": { "type": "string", "description": "Account subscription tier" },
+        "lastActive": { "type": "string", "description": "Timestamp of last session activity" },
+        "updatedAt": { "type": "string", "description": "Last profile update ISO timestamp" }
+      },
+      "required": ["userId", "email", "name"]
+    },
+    "projects": {
+      "title": "Saved Ad Projects",
+      "description": "Cloud-synced ad campaign projects",
+      "properties": {
+        "projectId": { "type": "string", "description": "Unique project identifier" },
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "userEmail": { "type": "string", "description": "Owner user email" },
+        "title": { "type": "string", "description": "Project title" },
+        "targetBrand": { "type": "string", "description": "Target brand name" },
+        "description": { "type": "string", "description": "Ad description or brief" },
+        "headline": { "type": "string", "description": "Primary ad headline" },
+        "bodyText": { "type": "string", "description": "Body copy text" },
+        "mediaType": { "type": "string", "description": "IMAGE or VIDEO" },
+        "mediaUrl": { "type": "string", "description": "Media artifact URL" },
+        "aspectRatio": { "type": "string", "description": "Aspect ratio setting" },
+        "resolution": { "type": "string", "description": "Resolution setting" },
+        "selectedFilter": { "type": "string", "description": "Visual filter selection" },
+        "updatedAt": { "type": "string", "description": "Last update display timestamp" },
+        "hotspotsCount": { "type": "number", "description": "Number of interactive hotspots" },
+        "commentsCount": { "type": "number", "description": "Number of timeline comments" }
+      },
+      "required": ["projectId", "userEmail", "title"]
+    }
+  }
+}
