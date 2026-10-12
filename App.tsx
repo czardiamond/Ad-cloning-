@@ -28,78 +28,33 @@ import {
   Wand2 
 } from 'lucide-react';
 import { UserProfile, SavedUserProject, MediaType, AspectRatio, Resolution } from './types';
-import { 
-  syncUserProfileToCloud, 
-  saveProjectToCloud, 
-  deleteProjectFromCloud, 
-  subscribeToUserCloudProjects 
+import {
+  saveProjectToCloud,
+  deleteProjectFromCloud,
+  subscribeToUserCloudProjects,
+  onAuthChange,
+  ensureUserProfile,
+  toUserProfile,
+  signInWithGoogle,
+  signOutUser,
+  newProjectId,
+  DEFAULT_TIER
 } from './services/firebase';
 
-const INITIAL_USER: UserProfile = {
-  id: 'user-diamond',
-  name: 'Diamond Anyanwu',
-  email: 'anyanwudiamond@gmail.com',
-  isLoggedIn: true,
-  lastActive: 'Active now',
-  tier: 'Pro Workspace'
+// Shown while signed out. Real identity comes only from Firebase Auth (onAuthStateChanged).
+const SIGNED_OUT_USER: UserProfile = {
+  id: '',
+  name: 'Guest',
+  email: '',
+  isLoggedIn: false,
+  lastActive: 'Signed out',
+  tier: DEFAULT_TIER
 };
 
-const DEFAULT_SAMPLE_PROJECTS: SavedUserProject[] = [
-  {
-    id: 'proj-1',
-    userId: 'user-diamond',
-    title: 'Nike Air Max Cyberpunk Reel',
-    targetBrand: 'Nike',
-    description: 'High energy futuristic sneaker commercial with dynamic camera zoom',
-    headline: 'Elevate Every Step with Air Max 2026',
-    bodyText: 'Designed for the bold, engineered for performance.',
-    mediaType: MediaType.VIDEO,
-    mediaUrl: 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800&q=80',
-    aspectRatio: AspectRatio.PORTRAIT,
-    resolution: Resolution.RES_1080P,
-    selectedFilter: 'brightness',
-    updatedAt: '2 hours ago',
-    hotspotsCount: 2,
-    commentsCount: 3
-  },
-  {
-    id: 'proj-2',
-    userId: 'user-diamond',
-    title: 'Coca-Cola Zero Sugar Summer Refresh',
-    targetBrand: 'Coca-Cola',
-    description: 'Crisp summer aesthetic banner with icy cold condensation effect',
-    headline: 'Real Magic in Every Chill',
-    bodyText: 'Zero Sugar. Unlimited Energy.',
-    mediaType: MediaType.IMAGE,
-    mediaUrl: 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=800&q=80',
-    aspectRatio: AspectRatio.SQUARE,
-    resolution: Resolution.RES_4K,
-    selectedFilter: 'cool',
-    updatedAt: 'Yesterday',
-    hotspotsCount: 1,
-    commentsCount: 1
-  }
-];
-
 function App() {
-  const [currentUser, setCurrentUser] = useState<UserProfile>(() => {
-    try {
-      const saved = localStorage.getItem('adclone_user_session');
-      return saved ? JSON.parse(saved) : INITIAL_USER;
-    } catch (e) {
-      return INITIAL_USER;
-    }
-  });
-
-  const [savedProjects, setSavedProjects] = useState<SavedUserProject[]>(() => {
-    try {
-      const key = `adclone_user_projects_${currentUser.email}`;
-      const saved = localStorage.getItem(key);
-      return saved ? JSON.parse(saved) : DEFAULT_SAMPLE_PROJECTS;
-    } catch (e) {
-      return DEFAULT_SAMPLE_PROJECTS;
-    }
-  });
+  const [currentUser, setCurrentUser] = useState<UserProfile>(SIGNED_OUT_USER);
+  const [authReady, setAuthReady] = useState(false);
+  const [savedProjects, setSavedProjects] = useState<SavedUserProject[]>([]);
 
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [loadedProject, setLoadedProject] = useState<SavedUserProject | null>(null);
@@ -133,82 +88,53 @@ function App() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Sync session state to local memory & Cloud Firestore
+  // Firebase Auth drives who is signed in.
   useEffect(() => {
+    const unsubscribe = onAuthChange(async (fbUser) => {
+      if (!fbUser) {
+        setCurrentUser(SIGNED_OUT_USER);
+        setSavedProjects([]);
+        setAuthReady(true);
+        return;
+      }
+      // Show the user immediately, then load their stored tier from Firestore.
+      setCurrentUser(toUserProfile(fbUser, DEFAULT_TIER));
+      setAuthReady(true);
+      const tier = await ensureUserProfile(fbUser);
+      setCurrentUser(toUserProfile(fbUser, tier));
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Live list of this user's projects from Cloud Firestore.
+  useEffect(() => {
+    if (!currentUser.isLoggedIn || !currentUser.id) return;
+    const unsubscribe = subscribeToUserCloudProjects(currentUser.id, (cloudProjects) => {
+      setSavedProjects(cloudProjects);
+    });
+    return () => unsubscribe();
+  }, [currentUser.isLoggedIn, currentUser.id]);
+
+  const handleLogOff = async () => {
     try {
-      localStorage.setItem('adclone_user_session', JSON.stringify(currentUser));
-      if (currentUser.isLoggedIn && currentUser.email) {
-        syncUserProfileToCloud(currentUser);
-      }
+      await signOutUser();
     } catch (e) {
-      console.error('Error saving user session:', e);
+      console.error('Sign-out failed:', e);
     }
-  }, [currentUser]);
-
-  // Sync projects state to local memory & listen for Cloud Firestore live updates
-  useEffect(() => {
-    if (currentUser.email) {
-      try {
-        const key = `adclone_user_projects_${currentUser.email}`;
-        localStorage.setItem(key, JSON.stringify(savedProjects));
-      } catch (e) {
-        console.error('Error saving projects memory:', e);
-      }
-
-      // Realtime listener from Cloud Firestore
-      const unsubscribe = subscribeToUserCloudProjects(currentUser.email, (cloudProjects) => {
-        setSavedProjects(prev => {
-          // Merge cloud projects into existing projects avoiding duplicates
-          const merged = [...cloudProjects];
-          prev.forEach(p => {
-            if (!merged.some(cp => cp.id === p.id)) {
-              merged.push(p);
-            }
-          });
-          return merged;
-        });
-      });
-
-      return () => unsubscribe();
-    }
-  }, [currentUser.email]);
-
-  const handleLogOff = () => {
-    setCurrentUser(prev => ({ ...prev, isLoggedIn: false, lastActive: 'Logged Off' }));
   };
 
-  const handleLogIn = (email: string, name: string) => {
-    const newUser: UserProfile = {
-      id: `user-${Date.now()}`,
-      name: name || 'Creative Director',
-      email: email,
-      isLoggedIn: true,
-      lastActive: 'Active now',
-      tier: 'Pro Workspace'
-    };
-    setCurrentUser(newUser);
-
-    // Sync to Cloud
-    syncUserProfileToCloud(newUser);
-
-    // Load projects for this email from local cache first
-    try {
-      const key = `adclone_user_projects_${email}`;
-      const saved = localStorage.getItem(key);
-      if (saved) {
-        setSavedProjects(JSON.parse(saved));
-      } else {
-        setSavedProjects(DEFAULT_SAMPLE_PROJECTS);
-      }
-    } catch (e) {
-      setSavedProjects(DEFAULT_SAMPLE_PROJECTS);
-    }
+  const handleLogIn = async () => {
+    await signInWithGoogle();
   };
 
   const handleSaveCurrentProject = (title: string, currentSnapshotData?: Partial<SavedUserProject>) => {
+    if (!currentUser.isLoggedIn || !currentUser.id) {
+      setIsUserModalOpen(true);
+      return;
+    }
     const newProj: SavedUserProject = {
-      id: `proj-${Date.now()}`,
-      userId: currentUser.email || currentUser.id,
+      id: newProjectId(),
+      userId: currentUser.id,
       title: title,
       targetBrand: currentSnapshotData?.targetBrand || 'Brand Campaign',
       description: currentSnapshotData?.description || 'Ad campaign layout',
@@ -433,7 +359,7 @@ function App() {
                 </div>
                 <div className="hidden 2xl:flex flex-col text-left text-[11px] leading-tight pr-1">
                   <span className="font-bold text-white truncate max-w-[110px]">
-                    {currentUser.isLoggedIn ? currentUser.name : 'Logged Off'}
+                    {currentUser.isLoggedIn ? currentUser.name : authReady ? 'Logged Off' : 'Loading…'}
                   </span>
                   <span className="text-[9px] text-emerald-400 font-mono flex items-center gap-1">
                     <CheckCircle2 className="w-2.5 h-2.5" />

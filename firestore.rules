@@ -1,8 +1,66 @@
 rules_version = '2';
+
+// AdClone AI security rules.
+// - Every request must come from a user signed in with Firebase Auth.
+// - users/{uid}: each user can only read/write their own profile. The `tier`
+//   field starts at 'Free' and cannot be changed from the browser (paid tiers
+//   will be set later by a trusted server after payment).
+// - projects/{id}: only the owner (ownerUid == their uid) can read/write.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create: if isSelf(uid)
+        && request.resource.data.tier == 'Free'
+        && request.resource.data.uid == uid;
+      allow update: if isSelf(uid)
+        && request.resource.data.tier == resource.data.tier
+        && request.resource.data.uid == resource.data.uid;
+      allow delete: if false;
+    }
+
+    match /projects/{projectId} {
+      // Reads/deletes: only the owner. (List queries must filter on ownerUid == uid.)
+      allow read, delete: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      // Create: must stamp yourself as the owner.
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      // Update: must already own it, and can't hand it to someone else.
+      allow update: if signedIn()
+        && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // --- Existing community/studio features (kept working for signed-in users; reworked in phase 2) ---
+
+    // Public feedback board: signed-in users can read and post; others can only change upvotes.
+    match /community_feedback/{postId} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update: if signedIn()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['upvotes', 'upvotedBy']);
+      allow delete: if false;
+    }
+
+    // Write-only logs from studio modals: signed-in users may add entries, nobody reads them from the browser.
+    match /competitor_spy_audits/{docId} {
+      allow create: if signedIn();
+    }
+    match /client_annotations/{docId} {
+      allow create: if signedIn();
+    }
+
+    // Everything else is closed.
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }
