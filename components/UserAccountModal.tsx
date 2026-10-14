@@ -11,8 +11,9 @@ interface UserAccountModalProps {
   onLoadProject: (project: SavedUserProject) => void;
   onSaveCurrentProject: (title: string) => void;
   onDeleteProject: (projectId: string) => void;
-  onLogOff: () => void;
-  onLogIn: (email: string, name: string) => void;
+  onLogOff: () => void | Promise<void>;
+  /** Opens the Google sign-in popup (Firebase Auth). */
+  onLogIn: () => Promise<void>;
 }
 
 export const UserAccountModal: React.FC<UserAccountModalProps> = ({
@@ -29,14 +30,12 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'profile' | 'projects' | 'login'>('projects');
   const [newProjectTitle, setNewProjectTitle] = useState('');
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginName, setLoginName] = useState('');
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
   const [notification, setNotification] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!currentUser.isLoggedIn) {
-      setActiveTab('login');
-    }
+    setActiveTab(currentUser.isLoggedIn ? 'projects' : 'login');
   }, [currentUser.isLoggedIn]);
 
   if (!isOpen) return null;
@@ -54,13 +53,29 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({
     showToast(`Project "${newProjectTitle}" saved to user memory!`);
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!loginEmail.trim()) return;
-    const name = loginName.trim() || loginEmail.split('@')[0];
-    onLogIn(loginEmail.trim(), name);
-    showToast(`Welcome back, ${name}! Memory restored.`);
-    setActiveTab('projects');
+  const handleGoogleSignIn = async () => {
+    setSignInError(null);
+    setIsSigningIn(true);
+    try {
+      await onLogIn();
+      showToast('Signed in with Google. Your projects are loading.');
+      setActiveTab('projects');
+    } catch (err: any) {
+      const code = err?.code || '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setSignInError(null);
+      } else if (code === 'auth/popup-blocked') {
+        setSignInError('Your browser blocked the sign-in popup. Allow popups for this site and try again.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setSignInError('This website address is not yet authorized for sign-in. Add it under Firebase Console > Authentication > Settings > Authorized domains.');
+      } else if (code === 'auth/operation-not-allowed') {
+        setSignInError('Google sign-in is not enabled yet. Turn it on in Firebase Console > Authentication > Sign-in method.');
+      } else {
+        setSignInError(err?.message || 'Sign-in failed. Please try again.');
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
   };
 
   const handleExportBackup = () => {
@@ -154,7 +169,7 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({
               onClick={() => setActiveTab('login')}
               className="pb-3 border-b-2 border-[#A8C7FA] text-[#A8C7FA] flex items-center gap-2"
             >
-              <LogIn className="w-4 h-4" /> Sign In / Switch User
+              <LogIn className="w-4 h-4" /> Sign In
             </button>
           )}
         </div>
@@ -292,9 +307,9 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({
                 </div>
 
                 <button
-                  onClick={() => {
-                    onLogOff();
-                    showToast('Logged off successfully. Memory saved.');
+                  onClick={async () => {
+                    await onLogOff();
+                    showToast('Signed out.');
                     setActiveTab('login');
                   }}
                   className="px-4 py-2 bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold rounded-xl text-xs transition-colors flex items-center gap-2"
@@ -356,43 +371,38 @@ export const UserAccountModal: React.FC<UserAccountModalProps> = ({
                 <div className="w-12 h-12 bg-[#A8C7FA]/20 text-[#A8C7FA] rounded-full flex items-center justify-center mx-auto">
                   <User className="w-6 h-6" />
                 </div>
-                <h4 className="text-lg font-bold text-white">Log In or Resume User Session</h4>
+                <h4 className="text-lg font-bold text-white">Sign in to AdClone AI</h4>
                 <p className="text-xs text-[#8E918F] max-w-md mx-auto">
-                  Enter your email address to log in and instantly restore all your saved ad projects, branding assets, and custom settings.
+                  Sign in with your Google account to save your ad projects and pick up where you left off on any device.
                 </p>
               </div>
 
-              <form onSubmit={handleLoginSubmit} className="max-w-md mx-auto bg-[#222222] p-6 border border-white/5 rounded-2xl space-y-4">
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-[#8E918F]">Full Name / Alias</label>
-                  <input
-                    type="text"
-                    value={loginName}
-                    onChange={(e) => setLoginName(e.target.value)}
-                    placeholder="e.g. Diamond Anyanwu"
-                    className="w-full bg-[#161616] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#A8C7FA]"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-[#8E918F]">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    value={loginEmail}
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    placeholder="e.g. anyanwudiamond@gmail.com"
-                    className="w-full bg-[#161616] border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#A8C7FA]"
-                  />
-                </div>
-
+              <div className="max-w-md mx-auto bg-[#222222] p-6 border border-white/5 rounded-2xl space-y-4">
                 <button
-                  type="submit"
-                  className="w-full py-2.5 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold text-xs rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  disabled={isSigningIn}
+                  className="w-full py-2.5 bg-white hover:bg-slate-100 disabled:opacity-60 text-[#1F1F1F] font-bold text-xs rounded-xl transition-all shadow-lg flex items-center justify-center gap-2"
                 >
-                  <LogIn className="w-4 h-4" /> Restore Session & Access Memory
+                  {isSigningIn ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <svg className="w-4 h-4" viewBox="0 0 48 48" aria-hidden="true">
+                      <path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/>
+                      <path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34.1 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>
+                      <path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.5 5C9.5 39.6 16.2 44 24 44z"/>
+                      <path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 38.2 44 33 44 24c0-1.3-.1-2.4-.4-3.5z"/>
+                    </svg>
+                  )}
+                  {isSigningIn ? 'Opening Google…' : 'Continue with Google'}
                 </button>
-              </form>
+                {signInError && (
+                  <p className="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/20 rounded-xl p-2">{signInError}</p>
+                )}
+                <p className="text-[10px] text-[#6E716F] text-center">
+                  We only use your Google name, email and photo to keep your projects private to you.
+                </p>
+              </div>
             </div>
           )}
         </div>

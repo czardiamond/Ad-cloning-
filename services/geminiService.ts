@@ -1,11 +1,25 @@
-import { GoogleGenAI, Modality, Type } from "@google/genai";
+// All real Gemini calls run on the server (/api/*), so the API key never reaches the browser.
+// The Gemini SDK is NOT imported in the browser; these are the same string values as the
+// SDK's `Type` and `Modality` enums, used to build request configs for the proxy.
+const Type = { STRING: "STRING", INTEGER: "INTEGER", ARRAY: "ARRAY", OBJECT: "OBJECT" } as const;
+const Modality = { AUDIO: "AUDIO" } as const;
 import { AdConfiguration, MediaType, Resolution, AspectRatio, AudioTrack } from "../types";
+import { getIdToken } from "./firebase";
 
 // Helper for user-friendly error messages
 export const formatError = (error: any): string => {
   const msg = error.message || error.toString();
+  if (msg.includes("sign in") || msg.includes("401")) {
+      return "Please sign in with Google (top-right) to use AI features.";
+  }
+  if (msg.includes("413")) {
+      return "That file is too large to send (max 4 MB). Try a smaller image or a shorter audio clip.";
+  }
+  if (msg.includes("GEMINI_API_KEY") || msg.includes("FIREBASE_PROJECT_ID")) {
+      return "The AI service isn't configured on the server yet. The site owner needs to set GEMINI_API_KEY and FIREBASE_PROJECT_ID.";
+  }
   if (msg.includes("API_KEY") || msg.includes("403")) {
-      return "Access denied (403). Your API Key is missing, invalid, or associated with a non-billed project. Please check your settings in Google AI Studio.";
+      return "Access denied (403). The server's Gemini API key is missing, invalid, or on a project without billing.";
   }
   if (msg.includes("400")) {
       return "Invalid request (400). The model rejected the input. Try reducing the prompt length or ensuring the media format is supported.";
@@ -17,7 +31,7 @@ export const formatError = (error: any): string => {
       return "Server error (500). Google's AI service is experiencing internal issues. Please try again later.";
   }
   if (msg.includes("Requested entity was not found")) {
-      return "Session expired or API key not found. Please click the 'Billing Info' link or reload to re-select your key.";
+      return "The requested AI resource was not found. Please try again.";
   }
   if (msg.includes("SAFETY")) {
       return "Safety violation. The request was blocked by safety filters. Please ensure your prompt is appropriate.";
@@ -25,26 +39,56 @@ export const formatError = (error: any): string => {
   return "An unexpected error occurred: " + msg;
 };
 
-// Helper to ensure we have a key for paid services (Veo, Pro Image)
-export const ensureApiKey = async (): Promise<void> => {
-  const win = window as any;
-  if (win.aistudio && typeof win.aistudio.hasSelectedApiKey === 'function') {
-    const hasKey = await win.aistudio.hasSelectedApiKey();
-    if (!hasKey) {
-      if (typeof win.aistudio.openSelectKey === 'function') {
-        await win.aistudio.openSelectKey();
-        // MUST assume the key selection was successful after triggering openSelectKey() and proceed as per instructions.
-      } else {
-        throw new Error("API Key selection not supported in this environment.");
-      }
+// Kept for compatibility with existing callers. The API key now lives on the server,
+// so there is nothing to select in the browser. This is intentionally a no-op.
+export const ensureApiKey = async (): Promise<void> => {};
+
+/* ----------------------------------------------------------------------------
+ * Server proxy client
+ * --------------------------------------------------------------------------*/
+
+async function authHeaders(): Promise<Record<string, string>> {
+  const token = await getIdToken();
+  if (!token) throw new Error("401: Please sign in with Google to use AI features.");
+  return { Authorization: `Bearer ${token}` };
+}
+
+async function callApi<T = any>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+  const headers: Record<string, string> = await authHeaders();
+  let body: string | undefined;
+  if (init.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(init.body);
+  }
+  const res = await fetch(path, { method: init.method || (body ? "POST" : "GET"), headers, body });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const data = await res.json();
+      detail = data?.error || detail;
+    } catch { /* non-JSON error */ }
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+interface ProxyGenerateResponse {
+  text: string | undefined;
+  candidates: any[];
+}
+
+/**
+ * Drop-in stand-in for `new GoogleGenAI(...)`: exposes `models.generateContent` with the same
+ * call shape, but forwards the request to /api/generate where the key is held.
+ */
+const getClient = () => ({
+  models: {
+    generateContent: async (params: { model: string; contents: any; config?: any }): Promise<ProxyGenerateResponse> => {
+      const data = await callApi<{ text: string | null; candidates: any[] }>("/api/generate", { body: params });
+      return { text: data.text ?? undefined, candidates: data.candidates || [] };
     }
   }
-};
-
-// Use process.env.API_KEY directly as per guidelines.
-const getClient = () => {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
-};
+});
 
 export const analyzeAndSuggest = async (
   referenceMediaBase64: string | undefined,
@@ -236,7 +280,6 @@ export const generateAdImage = async (config: AdConfiguration): Promise<string> 
 
 export const generateAdVideo = async (config: AdConfiguration): Promise<string> => {
   await ensureApiKey();
-  const ai = getClient();
   const model = "veo-3.1-fast-generate-preview";
   const fullPrompt = `Professional video ad for ${config.targetBrand}. ${config.originalDescription}. ${config.modifications}. High production value, smooth camera movements.`;
 
@@ -259,14 +302,28 @@ export const generateAdVideo = async (config: AdConfiguration): Promise<string> 
        };
     }
 
-    let operation = await ai.models.generateVideos(requestParams);
-
-    while (!operation.done) {
+    // Start the Veo job on the server, then poll until it's finished.
+    const { jobId } = await callApi<{ jobId: string }>("/api/video", { body: requestParams });
+    const started = Date.now();
+    while (true) {
       await new Promise(resolve => setTimeout(resolve, 10000));
-      operation = await ai.operations.getVideosOperation({ operation: operation });
+      const status = await callApi<{ done: boolean; error?: string }>(`/api/video?job=${encodeURIComponent(jobId)}`);
+      if (status.done) {
+        if (status.error) throw new Error(status.error);
+        break;
+      }
+      if (Date.now() - started > 15 * 60 * 1000) throw new Error("Video generation timed out. Please try again.");
     }
-    const uri = operation.response?.generatedVideos?.[0]?.video?.uri;
-    return `${uri}&key=${process.env.API_KEY}`;
+
+    // Download the finished file through the server (which adds the key) and play it from memory.
+    const res = await fetch(`/api/video-file?job=${encodeURIComponent(jobId)}`, { headers: await authHeaders() });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try { detail = (await res.json())?.error || detail; } catch { /* binary */ }
+      throw new Error(`${res.status}: ${detail}`);
+    }
+    const blob = await res.blob();
+    return URL.createObjectURL(blob);
   } catch (error: any) { throw new Error(formatError(error)); }
 };
 

@@ -344,14 +344,18 @@ export interface Message {
   content: string;
 }
 
+/** Subscription tier. Everyone starts on 'Free'; paid tiers will be set server-side once payments exist. */
+export type UserTier = 'Free' | 'Pro' | 'Enterprise';
+
 export interface UserProfile {
+  /** Firebase Auth uid (empty string when signed out). */
   id: string;
   name: string;
   email: string;
   avatarUrl?: string;
   isLoggedIn: boolean;
   lastActive: string;
-  tier: 'Pro Workspace' | 'Enterprise AI';
+  tier: UserTier;
 }
 
 export interface SavedUserProject {
